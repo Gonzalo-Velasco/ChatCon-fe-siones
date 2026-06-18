@@ -1,4 +1,10 @@
 import os
+import asyncio
+import threading
+
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask
 from flask_socketio import SocketIO, send
 from telegram import Update
@@ -8,16 +14,14 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-
-import threading
 import requests
-import eventlet
 
-# CONFIGURACION TELEGRAM
-tokenTelegram = "tu toquen aqui"
-chatID = "tu ID aqui"
+# CONFIGURACION TELEGRAM (desde variables de entorno de Render)
+tokenTelegram = os.environ.get("TOKEN_TELEGRAM")
+chatID = os.environ.get("CHAT_ID")
 
-eventlet.monkey_patch()
+if not tokenTelegram or not chatID:
+    print("ADVERTENCIA: TOKEN_TELEGRAM o CHAT_ID no estan configurados como variables de entorno")
 
 # CREAR APP
 app = Flask(__name__)
@@ -28,10 +32,8 @@ socket = SocketIO(
     cors_allowed_origins="*"
 )
 
-# CREAR BOT TELEGRAM
-botTelegram = ApplicationBuilder().token(
-    tokenTelegram
-).build()
+# CREAR BOT TELEGRAM (solo si hay token)
+botTelegram = ApplicationBuilder().token(tokenTelegram).build() if tokenTelegram else None
 
 # PAGINA PRINCIPAL
 @app.route("/")
@@ -244,122 +246,103 @@ def index():
       font-size: .88rem; font-weight: 600;
       display: flex; align-items: center; gap: 8px;
       backdrop-filter: blur(6px);
-      animation: toastIn .4s ease, toastOut .4s ease 2.5s forwards;
-      z-index: 200; white-space: nowrap;
+      animation: fadeIn .3s ease;
+      z-index: 50;
     }
-    .welcome-toast svg { width: 16px; height: 16px; fill: #7af0a0; }
-    @keyframes toastIn  { from { opacity:0; transform: translateX(-50%) translateY(12px) } to { opacity:1; transform: translateX(-50%) translateY(0) } }
-    @keyframes toastOut { from { opacity:1 } to { opacity:0; pointer-events:none } }
+    .welcome-toast svg { width: 18px; height: 18px; fill: #4ade80; }
  
-    .chat-input-area {
+    .chat-footer {
+      display: flex; align-items: center; gap: 10px;
       padding: 14px 16px;
       border-top: 1.5px solid var(--gray-200);
       background: var(--white);
-      display: flex; align-items: center; gap: 10px;
     }
-    .chat-input {
+    .chat-footer input {
       flex: 1;
-      border: 1.5px solid var(--gray-200);
+      border: none;
+      background: var(--gray-100);
       border-radius: 24px;
       padding: 12px 18px;
-      font-size: .93rem;
+      font-size: .92rem;
       font-family: 'Nunito', sans-serif;
-      font-weight: 600; color: var(--text);
-      background: var(--gray-100);
+      color: var(--text);
       outline: none;
-      transition: border-color .2s;
     }
-    .chat-input:focus { border-color: var(--login-green); background: var(--white); }
-    .chat-input::placeholder { color: var(--gray-400); font-weight: 500; }
- 
     .send-btn {
-      width: 44px; height: 44px;
-      border-radius: 50%;
-      background: var(--login-green); border: none;
+      width: 42px; height: 42px;
+      border-radius: 50%; border: none;
+      background: var(--login-green);
       cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      transition: background .2s, transform .1s; flex-shrink: 0;
+      flex-shrink: 0;
+      transition: background .15s, transform .1s;
     }
-    .send-btn:hover  { background: var(--login-green-dark); }
-    .send-btn:active { transform: scale(.93); }
-    .send-btn svg { width: 20px; height: 20px; fill: #fff; margin-left: 2px; }
+    .send-btn:hover { background: var(--login-green-dark); }
+    .send-btn:active { transform: scale(.92); }
+    .send-btn svg { width: 19px; height: 19px; fill: #fff; }
   </style>
 </head>
 <body>
- 
-<!-- OVERLAY LOGIN -->
-<div class="overlay" id="overlay">
-  <div class="modal">
-    <h1>¡Bienvenido!</h1>
-    <p>Ingresa tu nombre para comenzar a confesarte</p>
-    <div class="input-wrap">
-      <label for="usernameInput">Tu nombre de usuario</label>
-      <input type="text" id="usernameInput" placeholder="" maxlength="30" autocomplete="off" />
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h1>Bienvenido</h1>
+      <p>Ingresa tu nombre para entrar al chat de confesiones.</p>
+      <div class="input-wrap">
+        <label>Nombre</label>
+        <input type="text" id="usernameInput" placeholder="Tu nombre" autocomplete="off"/>
+      </div>
+      <button class="btn-primary" id="enterBtn">
+        <svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5v10zM4 4h2v16H4V4z"/></svg>
+        Entrar al chat
+      </button>
     </div>
-    <button class="btn-primary" id="enterBtn">
-      Ingresar
-    </button>
   </div>
-</div>
- 
-<!-- CHAT APP -->
-<div class="chat-app hidden" id="chatApp">
-  <div class="chat-header">
-    <div class="av" id="headerAvatar"></div>
-    <div class="chat-header-info">
-      <div class="room-name">Chat para Confesarse</div>
-      <div class="status">
-        <span class="status-dot"></span>
-        Sincronizado 
+
+  <div class="chat-app hidden" id="chatApp">
+    <div class="chat-header">
+      <div class="av" id="headerAvatar"></div>
+      <div class="chat-header-info">
+        <div class="room-name">Chat de Confesiones</div>
+        <div class="status"><span class="status-dot"></span>En linea</div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="darkBtn" title="Modo oscuro">
+          <svg id="darkIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button class="icon-btn" id="logoutBtn" title="Salir">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 13v-2H7V8l-5 4 5 4v-3z"/><path d="M20 3h-9c-1.1 0-2 .9-2 2v4h2V5h9v14h-9v-4H9v4c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+        </button>
       </div>
     </div>
-    <div class="header-actions">
-      <button class="icon-btn" id="darkBtn" title="Modo oscuro">
-        <svg id="darkIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-        </svg>
-      </button>
-      <button class="icon-btn" title="Salir" id="logoutBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-          <polyline points="16 17 21 12 16 7"/>
-          <line x1="21" y1="12" x2="9" y2="12"/>
-        </svg>
+
+    <div class="chat-messages" id="chatMessages"></div>
+
+    <div class="chat-footer">
+      <input type="text" id="chatInput" placeholder="Escribe un mensaje..." autocomplete="off"/>
+      <button class="send-btn" id="sendBtn">
+        <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
       </button>
     </div>
   </div>
- 
-  <div class="chat-messages" id="chatMessages"></div>
- 
-  <div class="chat-input-area">
-    <input class="chat-input" id="chatInput" type="text"
-           placeholder="Escribe un mensaje..." maxlength="500" />
-    <button class="send-btn" id="sendBtn">
-      <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-    </button>
-  </div>
-</div>
- 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-  var socket = io();
- 
-  const COLORS = ['#4cbb6a','#e06f5a','#a06bdb','#e0a020','#3ab4d8','#e05aa0','#22c49a'];
- 
-  let currentUser  = null;
-  let userColor    = null;
-  let darkMode     = false;
-  const userColorMap = {};
- 
-  function getInitials(name) {
-    return name.trim().split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0,2);
-  }
- 
+  const socket = io();
+  let currentUser = null;
+  let userColor   = null;
+  let darkMode    = false;
+
+  const palette = ['#22c55e','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316'];
+
   function colorForUser(name) {
-    if (!userColorMap[name]) {
-      userColorMap[name] = COLORS[Object.keys(userColorMap).length % COLORS.length];
-    }
-    return userColorMap[name];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    return palette[Math.abs(hash) % palette.length];
+  }
+
+  function getInitials(name) {
+    return name.trim().split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
   }
  
   function now() {
@@ -544,8 +527,8 @@ def index():
 @socket.on("message")
 def recibirMensaje(mensaje):
     print("Mensaje WEB:", mensaje)
-    
-    # Mostrar a todos los clientes WEB (incluyendo al que lo envió)
+
+    # Mostrar a todos los clientes WEB (incluyendo al que lo envio)
     send(mensaje, broadcast=True)
 
     # Enviar a Telegram
@@ -556,6 +539,8 @@ def recibirMensaje(mensaje):
 
 # ENVIAR A TELEGRAM
 def enviarTelegram(mensaje):
+    if not tokenTelegram or not chatID:
+        return
     url = f"https://api.telegram.org/bot{tokenTelegram}/sendMessage"
     data = {
         "chat_id": chatID,
@@ -572,7 +557,7 @@ async def recibirTelegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario = update.message.from_user.first_name
     mensaje = update.message.text
     texto = f"{usuario}: {mensaje}"
-    
+
     print("Telegram:", texto)
 
     # SOLO enviar a WEB
@@ -583,6 +568,14 @@ async def recibirTelegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # INICIAR BOT
 def iniciarBot():
+    if not botTelegram:
+        print("Bot de Telegram NO iniciado: falta configurar TOKEN_TELEGRAM/CHAT_ID")
+        return
+
+    # Cada hilo necesita su propio event loop de asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     botTelegram.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -592,14 +585,15 @@ def iniciarBot():
     print("BOT TELEGRAM ACTIVO")
     botTelegram.run_polling()
 
-# MAIN
-if __name__ == "__main__":
-    hiloBot = threading.Thread(target=iniciarBot)
-    hiloBot.start()
+# Arrancar el hilo del bot al cargar el modulo.
+# Esto se ejecuta tanto si corres "python final.py" como si lo
+# importa gunicorn (gunicorn nunca pasa por el bloque __main__).
+hiloBot = threading.Thread(target=iniciarBot, daemon=True)
+hiloBot.start()
 
-    # CORREGIDO AQUÍ: Leer el puerto dinámico de Render
+# MAIN (solo se usa si corres el archivo directo, ej. en local)
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    
     print(f"Servidor iniciado en puerto {port}")
     socket.run(
         app,
